@@ -4,16 +4,19 @@
 #include <vector>
 #include <string>
 using namespace std;
+
 // Structure to hold the parsed HTTP message data
 struct HttpParser {
-    string method;
-    string url;
+    string method;        // For requests
+    string url;           // For requests
+    string status_code;   // For responses
+    string status_message; // For responses
     map<string, string> headers;
     string body;
 };
 
 // Enum for managing parser state
-enum ParseState { REQUEST_LINE, HEADERS, BODY };
+enum ParseState { REQUEST_LINE, RESPONSE_LINE, HEADERS, BODY };
 
 // Function to parse the HTTP request line
 void parseRequestLine(const string& request_line, HttpParser& parser) {
@@ -21,6 +24,15 @@ void parseRequestLine(const string& request_line, HttpParser& parser) {
     iss >> parser.method >> parser.url;
     cout << "Method: " << parser.method << "\n";
     cout << "URL: " << parser.url << "\n";
+}
+
+// Function to parse the HTTP response line
+void parseResponseLine(const string& response_line, HttpParser& parser) {
+    istringstream iss(response_line);
+    iss >> parser.status_code;
+    getline(iss, parser.status_message);
+    cout << "Status Code: " << parser.status_code << "\n";
+    cout << "Status Message: " << parser.status_message << "\n";
 }
 
 // Function to parse HTTP headers
@@ -48,13 +60,16 @@ bool isEndOfHeaders(const string& line) {
 }
 
 // Main function to simulate parsing of an HTTP message
-void handleParsing(const vector<string>& http_message, HttpParser& parser) {
-    ParseState state = REQUEST_LINE;
+void handleParsing(const vector<string>& http_message, HttpParser& parser, bool isRequest) {
+    ParseState state = isRequest ? REQUEST_LINE : RESPONSE_LINE;
     vector<string> headers;
 
     for (const auto& line : http_message) {
         if (state == REQUEST_LINE) {
             parseRequestLine(line, parser);
+            state = HEADERS;
+        } else if (state == RESPONSE_LINE) {
+            parseResponseLine(line, parser);
             state = HEADERS;
         } else if (state == HEADERS) {
             if (isEndOfHeaders(line)) {
@@ -74,8 +89,8 @@ void handleParsing(const vector<string>& http_message, HttpParser& parser) {
 }
 
 int main() {
-    // Example HTTP request (as lines of a string)
-    vector<string> http_message = {
+    // Example HTTP request
+    vector<string> http_request = {
         "GET /index.html HTTP/1.1",
         "Host: example.com",
         "Connection: keep-alive",
@@ -84,16 +99,44 @@ int main() {
         "Body content here (optional, usually for POST requests)"
     };
 
+    // Example HTTP response
+    vector<string> http_response = {
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/html",
+        "Content-Length: 1234",
+        "Connection: keep-alive",
+        "",
+        "<html><body>Hello, world!</body></html>"
+    };
+
     // Initialize the HTTP parser structure
     HttpParser parser;
 
-    // Simulate parsing the message
-    handleParsing(http_message, parser);
-
-    // Output the parsed results (optional)
-    cout << "\n--- Parsed HTTP Message ---\n";
+    // Simulate parsing the HTTP request
+    cout << "Parsing HTTP Request:\n";
+    handleParsing(http_request, parser, true);
+    
+    // Output the parsed results for the request
+    cout << "\n--- Parsed HTTP Request ---\n";
     cout << "Method: " << parser.method << "\n";
     cout << "URL: " << parser.url << "\n";
+    cout << "Headers:\n";
+    for (const auto& header : parser.headers) {
+        cout << header.first << ": " << header.second << "\n";
+    }
+    cout << "Body: " << parser.body << "\n";
+
+    // Clear the parser for the next message
+    parser = HttpParser();
+
+    // Simulate parsing the HTTP response
+    cout << "\nParsing HTTP Response:\n";
+    handleParsing(http_response, parser, false);
+
+    // Output the parsed results for the response
+    cout << "\n--- Parsed HTTP Response ---\n";
+    cout << "Status Code: " << parser.status_code << "\n";
+    cout << "Status Message: " << parser.status_message << "\n";
     cout << "Headers:\n";
     for (const auto& header : parser.headers) {
         cout << header.first << ": " << header.second << "\n";
