@@ -3,6 +3,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <algorithm>
 using namespace std;
 
 // Structure to hold the parsed HTTP message data
@@ -13,13 +14,26 @@ struct HttpParser {
     string status_message; // For responses
     map<string, string> headers;
     string body;
+    
+    // For multipart/form-data support
+    struct MultipartPart {
+        string name;
+        string filename;
+        string content_type;
+        string content;
+    };
+    vector<MultipartPart> multipart_parts;
 
     bool hasError;        // Flag for error state
     string errorMessage;  // Detailed error message
+
+    // To handle HTTP/2 and HTTP/3 (placeholder)
+    bool isHttp2;         // Flag to indicate if the message is HTTP/2
+    bool isHttp3;         // Flag to indicate if the message is HTTP/3
 };
 
 // Enum for managing parser state
-enum ParseState { REQUEST_LINE, RESPONSE_LINE, HEADERS, BODY };
+enum ParseState { REQUEST_LINE, RESPONSE_LINE, HEADERS, BODY, MULTIPART };
 
 // Function to report errors
 void reportError(HttpParser& parser, const string& message) {
@@ -78,6 +92,67 @@ void parseHeaders(const vector<string>& header_lines, HttpParser& parser) {
     }
 }
 
+// Function to parse multipart/form-data
+void parseMultipartBody(const string& body_content, HttpParser& parser) {
+    // Find the boundary from the headers
+    auto it = parser.headers.find("Content-Type");
+    if (it != parser.headers.end()) {
+        string content_type = it->second;
+        size_t boundary_pos = content_type.find("boundary=");
+        if (boundary_pos != string::npos) {
+            string boundary = "--" + content_type.substr(boundary_pos + 9);  // Get the boundary value
+            size_t start = 0;
+            size_t end = 0;
+
+            // Parse the multipart content
+            while ((start = body_content.find(boundary, end)) != string::npos) {
+                end = body_content.find(boundary, start + boundary.length());
+                if (end == string::npos) break;
+
+                // Extract the part content
+                string part = body_content.substr(start + boundary.length(), end - start - boundary.length());
+                size_t header_end = part.find("\r\n\r\n");
+                if (header_end == string::npos) continue; // Invalid part format
+
+                // Extract headers and content
+                string headers_content = part.substr(0, header_end);
+                string content = part.substr(header_end + 4); // Skip "\r\n\r\n"
+
+                // Parse headers for the multipart part
+                HttpParser::MultipartPart multipart_part;
+                istringstream headers_stream(headers_content);
+                string header_line;
+                while (getline(headers_stream, header_line)) {
+                    if (header_line.find("Content-Disposition:") != string::npos) {
+                        size_t name_pos = header_line.find("name=\"");
+                        if (name_pos != string::npos) {
+                            size_t name_end = header_line.find("\"", name_pos + 6);
+                            multipart_part.name = header_line.substr(name_pos + 6, name_end - (name_pos + 6));
+                        }
+
+                        size_t filename_pos = header_line.find("filename=\"");
+                        if (filename_pos != string::npos) {
+                            size_t filename_end = header_line.find("\"", filename_pos + 10);
+                            multipart_part.filename = header_line.substr(filename_pos + 10, filename_end - (filename_pos + 10));
+                        }
+                    }
+                    if (header_line.find("Content-Type:") != string::npos) {
+                        multipart_part.content_type = header_line.substr(header_line.find(":") + 2);
+                    }
+                }
+
+                multipart_part.content = content;
+                parser.multipart_parts.push_back(multipart_part);
+
+                cout << "Parsed multipart part: name=" << multipart_part.name 
+                     << ", filename=" << multipart_part.filename 
+                     << ", content_type=" << multipart_part.content_type 
+                     << ", content=" << multipart_part.content.substr(0, 20) << "...\n"; // Print first 20 chars of content
+            }
+        }
+    }
+}
+
 // Function to append to the body of the HTTP message (for streaming)
 void appendBody(const string& body_content, HttpParser& parser) {
     parser.body += body_content;
@@ -112,7 +187,14 @@ void handleParsing(const vector<string>& http_message, HttpParser& parser, bool 
                 headers.push_back(line);
             }
         } else if (state == BODY) {
-            appendBody(line, parser); // Stream body content
+            // Check for multipart/form-data
+            auto content_type_it = parser.headers.find("Content-Type");
+            if (content_type_it != parser.headers.end() && 
+                content_type_it->second.find("multipart/form-data") != string::npos) {
+                parseMultipartBody(parser.body, parser);
+            } else {
+                appendBody(line, parser); // Stream body content
+            }
         }
     }
 
@@ -122,15 +204,20 @@ void handleParsing(const vector<string>& http_message, HttpParser& parser, bool 
 }
 
 int main() {
-    // Example HTTP request with an error (missing colon in header)
+    // Example HTTP request with multipart/form-data
     vector<string> http_request = {
-        "GET /index.html HTTP/1.1",
-        "Host example.com",  // Malformed header
-        "Connection: keep-alive",
-        "Accept: text/html",
+        "POST /upload HTTP/1.1",
+        "Host: example.com",
+        "Content-Type: multipart/form-data; boundary=boundary123",
         "",
-        "Body content part 1.",
-        "Body content part 2."
+        "--boundary123\r\n"
+        "Content-Disposition: form-data; name=\"field1\"\r\n\r\n"
+        "value1\r\n"
+        "--boundary123\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"file.txt\"\r\n"
+        "Content-Type: text/plain\r\n\r\n"
+        "file content here\r\n"
+        "--boundary123--"
     };
 
     // Example HTTP response
@@ -161,6 +248,14 @@ int main() {
             cout << header.first << ": " << header.second << "\n";
         }
         cout << "Body: " << parser.body << "\n";
+
+        // Output multipart parts
+        cout << "Multipart Parts:\n";
+        for (const auto& part : parser.multipart_parts) {
+            cout << "Part Name: " << part.name << ", Filename: " << part.filename 
+                 << ", Content Type: " << part.content_type << "\n";
+            cout << "Content: " << part.content.substr(0, 20) << "...\n"; // Print first 20 chars of content
+        }
     }
 
     // Clear the parser for the next message
