@@ -4,6 +4,9 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <functional>
+#include <memory>
+
 using namespace std;
 
 // Structure to hold the parsed HTTP message data
@@ -30,6 +33,12 @@ struct HttpParser {
     // To handle HTTP/2 and HTTP/3 (placeholder)
     bool isHttp2;         // Flag to indicate if the message is HTTP/2
     bool isHttp3;         // Flag to indicate if the message is HTTP/3
+
+    // Callback for async parsing
+    function<void(const HttpParser&)> onComplete;
+    function<void(const string&)> onError;
+
+    HttpParser() : hasError(false), isHttp2(false), isHttp3(false) {}
 };
 
 // Enum for managing parser state
@@ -40,6 +49,30 @@ void reportError(HttpParser& parser, const string& message) {
     parser.hasError = true;
     parser.errorMessage = message;
     cerr << "Error: " << message << "\n";
+    if (parser.onError) parser.onError(message);
+}
+
+// Function to validate and report errors for headers
+bool validateHeader(const string& key, const string& value, HttpParser& parser) {
+    if (key.empty() || value.empty()) {
+        reportError(parser, "Header key or value cannot be empty");
+        return false;
+    }
+    
+    // Example check for duplicates (simple implementation)
+    if (parser.headers.find(key) != parser.headers.end()) {
+        reportError(parser, "Duplicate header: " + key);
+        return false;
+    }
+
+    // Add additional checks for forbidden headers, etc., as needed
+    // (Example: checking for multiple Content-Length headers)
+    if (key == "Content-Length" && parser.headers.find("Content-Length") != parser.headers.end()) {
+        reportError(parser, "Multiple Content-Length headers found");
+        return false;
+    }
+
+    return true;
 }
 
 // Function to parse the HTTP request line
@@ -82,9 +115,10 @@ void parseHeaders(const vector<string>& header_lines, HttpParser& parser) {
 
         string key = header.substr(0, pos);
         string value = header.substr(pos + 1);
-        if (key.empty() || value.empty()) {
-            reportError(parser, "Empty key or value in header: " + header);
-            continue;  // Skip this header but continue parsing
+
+        // Validate header
+        if (!validateHeader(key, value, parser)) {
+            continue;  // Skip invalid header
         }
 
         parser.headers[key] = value;
@@ -94,13 +128,12 @@ void parseHeaders(const vector<string>& header_lines, HttpParser& parser) {
 
 // Function to parse multipart/form-data
 void parseMultipartBody(const string& body_content, HttpParser& parser) {
-    // Find the boundary from the headers
     auto it = parser.headers.find("Content-Type");
     if (it != parser.headers.end()) {
         string content_type = it->second;
         size_t boundary_pos = content_type.find("boundary=");
         if (boundary_pos != string::npos) {
-            string boundary = "--" + content_type.substr(boundary_pos + 9);  // Get the boundary value
+            string boundary = "--" + content_type.substr(boundary_pos + 9);
             size_t start = 0;
             size_t end = 0;
 
@@ -109,16 +142,13 @@ void parseMultipartBody(const string& body_content, HttpParser& parser) {
                 end = body_content.find(boundary, start + boundary.length());
                 if (end == string::npos) break;
 
-                // Extract the part content
                 string part = body_content.substr(start + boundary.length(), end - start - boundary.length());
                 size_t header_end = part.find("\r\n\r\n");
                 if (header_end == string::npos) continue; // Invalid part format
 
-                // Extract headers and content
                 string headers_content = part.substr(0, header_end);
                 string content = part.substr(header_end + 4); // Skip "\r\n\r\n"
 
-                // Parse headers for the multipart part
                 HttpParser::MultipartPart multipart_part;
                 istringstream headers_stream(headers_content);
                 string header_line;
@@ -147,7 +177,7 @@ void parseMultipartBody(const string& body_content, HttpParser& parser) {
                 cout << "Parsed multipart part: name=" << multipart_part.name 
                      << ", filename=" << multipart_part.filename 
                      << ", content_type=" << multipart_part.content_type 
-                     << ", content=" << multipart_part.content.substr(0, 20) << "...\n"; // Print first 20 chars of content
+                     << ", content=" << multipart_part.content.substr(0, 20) << "...\n";
             }
         }
     }
@@ -164,25 +194,43 @@ bool isEndOfHeaders(const string& line) {
     return line.empty();
 }
 
-// Main function to simulate parsing of an HTTP message
-void handleParsing(const vector<string>& http_message, HttpParser& parser, bool isRequest) {
-    ParseState state = isRequest ? REQUEST_LINE : RESPONSE_LINE;
+// Main function to simulate parsing of an HTTP message asynchronously
+void handleParsingAsync(const string& http_message_chunk, HttpParser& parser) {
+    vector<string> lines;
+    istringstream iss(http_message_chunk);
+    string line;
+
+    // Split the incoming chunk into lines
+    while (getline(iss, line)) {
+        lines.push_back(line);
+    }
+
+    ParseState state = parser.method.empty() ? REQUEST_LINE : HEADERS;
     vector<string> headers;
 
-    for (const auto& line : http_message) {
+    for (const auto& line : lines) {
         if (state == REQUEST_LINE) {
             parseRequestLine(line, parser);
-            if (parser.hasError) return;  // Stop if error occurred
+            if (parser.hasError) {
+                if (parser.onError) parser.onError(parser.errorMessage);
+                return;  // Stop if error occurred
+            }
             state = HEADERS;
         } else if (state == RESPONSE_LINE) {
             parseResponseLine(line, parser);
-            if (parser.hasError) return;  // Stop if error occurred
+            if (parser.hasError) {
+                if (parser.onError) parser.onError(parser.errorMessage);
+                return;  // Stop if error occurred
+            }
             state = HEADERS;
         } else if (state == HEADERS) {
             if (isEndOfHeaders(line)) {
                 state = BODY;
                 parseHeaders(headers, parser);
-                if (parser.hasError) return;  // Stop if error occurred
+                if (parser.hasError) {
+                    if (parser.onError) parser.onError(parser.errorMessage);
+                    return;  // Stop if error occurred
+                }
             } else {
                 headers.push_back(line);
             }
@@ -191,25 +239,31 @@ void handleParsing(const vector<string>& http_message, HttpParser& parser, bool 
             auto content_type_it = parser.headers.find("Content-Type");
             if (content_type_it != parser.headers.end() && 
                 content_type_it->second.find("multipart/form-data") != string::npos) {
-                parseMultipartBody(parser.body, parser);
+                parseMultipartBody(line, parser);
+                if (parser.hasError) {
+                    if (parser.onError) parser.onError(parser.errorMessage);
+                    return;  // Stop if error occurred
+                }
             } else {
-                appendBody(line, parser); // Stream body content
+                appendBody(line, parser);
             }
         }
     }
 
-    if (!headers.empty() && state == BODY) {
-        parseHeaders(headers, parser);
+    // Call onComplete callback if provided
+    if (!parser.hasError && parser.onComplete) {
+        parser.onComplete(parser);
     }
 }
 
 int main() {
-    // Example HTTP request with multipart/form-data
-    vector<string> http_request = {
-        "POST /upload HTTP/1.1",
-        "Host: example.com",
-        "Content-Type: multipart/form-data; boundary=boundary123",
-        "",
+    // Example HTTP request (with multipart/form-data)
+    string http_request_chunk = 
+        "POST /upload HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Content-Type: multipart/form-data; boundary=boundary123\r\n"
+        "Content-Length: 240\r\n"
+        "\r\n"
         "--boundary123\r\n"
         "Content-Disposition: form-data; name=\"field1\"\r\n\r\n"
         "value1\r\n"
@@ -217,65 +271,40 @@ int main() {
         "Content-Disposition: form-data; name=\"file\"; filename=\"file.txt\"\r\n"
         "Content-Type: text/plain\r\n\r\n"
         "file content here\r\n"
-        "--boundary123--"
-    };
-
-    // Example HTTP response
-    vector<string> http_response = {
-        "HTTP/1.1 200 OK",
-        "Content-Type: text/html",
-        "Content-Length: 1234",
-        "Connection: keep-alive",
-        "",
-        "<html><body>Hello, world!</body></html> Part 1.",
-        "<html><body> Goodbye!</body></html> Part 2."
-    };
+        "--boundary123--\r\n";
 
     // Initialize the HTTP parser structure
     HttpParser parser;
 
-    // Simulate parsing the HTTP request
-    cout << "Parsing HTTP Request:\n";
-    handleParsing(http_request, parser, true);
-
-    if (!parser.hasError) {
-        // Output the parsed results for the request
+    // Set up callbacks for async parsing
+    parser.onComplete = [](const HttpParser& completedParser) {
         cout << "\n--- Parsed HTTP Request ---\n";
-        cout << "Method: " << parser.method << "\n";
-        cout << "URL: " << parser.url << "\n";
+        cout << "Method: " << completedParser.method << "\n";
+        cout << "URL: " << completedParser.url << "\n";
         cout << "Headers:\n";
-        for (const auto& header : parser.headers) {
+        for (const auto& header : completedParser.headers) {
             cout << header.first << ": " << header.second << "\n";
         }
-        cout << "Body: " << parser.body << "\n";
+        cout << "Body: " << completedParser.body << "\n";
 
         // Output multipart parts
         cout << "Multipart Parts:\n";
-        for (const auto& part : parser.multipart_parts) {
+        for (const auto& part : completedParser.multipart_parts) {
             cout << "Part Name: " << part.name << ", Filename: " << part.filename 
                  << ", Content Type: " << part.content_type << "\n";
             cout << "Content: " << part.content.substr(0, 20) << "...\n"; // Print first 20 chars of content
         }
-    }
+    };
+
+    parser.onError = [](const string& error) {
+        cerr << "Error occurred during parsing: " << error << "\n";
+    };
+
+    // Simulate asynchronous parsing of the HTTP request
+    handleParsingAsync(http_request_chunk, parser);
 
     // Clear the parser for the next message
     parser = HttpParser();
-
-    // Simulate parsing the HTTP response
-    cout << "\nParsing HTTP Response:\n";
-    handleParsing(http_response, parser, false);
-
-    if (!parser.hasError) {
-        // Output the parsed results for the response
-        cout << "\n--- Parsed HTTP Response ---\n";
-        cout << "Status Code: " << parser.status_code << "\n";
-        cout << "Status Message: " << parser.status_message << "\n";
-        cout << "Headers:\n";
-        for (const auto& header : parser.headers) {
-            cout << header.first << ": " << header.second << "\n";
-        }
-        cout << "Body: " << parser.body << "\n";
-    }
 
     return 0;
 }
