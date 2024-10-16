@@ -1,4 +1,4 @@
- #include <iostream>
+#include <iostream>
 #include <sstream>
 #include <map>
 #include <vector>
@@ -48,10 +48,10 @@ void parseHeaders(const vector<string>& header_lines, HttpParser& parser) {
     }
 }
 
-// Function to parse the body of the HTTP message (optional)
-void parseBody(const string& body_content, HttpParser& parser) {
-    parser.body = body_content;
-    cout << "Body: " << parser.body << "\n";
+// Function to append to the body of the HTTP message (for streaming)
+void appendBody(const string& body_content, HttpParser& parser) {
+    parser.body += body_content;
+    cout << "Body (streamed): " << parser.body << "\n";
 }
 
 // Helper function to detect the end of headers
@@ -79,7 +79,7 @@ void handleParsing(const vector<string>& http_message, HttpParser& parser, bool 
                 headers.push_back(line);
             }
         } else if (state == BODY) {
-            parseBody(line, parser);
+            appendBody(line, parser); // Stream body content
         }
     }
 
@@ -96,7 +96,9 @@ int main() {
         "Connection: keep-alive",
         "Accept: text/html",
         "",
-        "Body content here (optional, usually for POST requests)"
+        "Body content part 1.",
+        "Body content part 2.",
+        "Body content part 3."
     };
 
     // Example HTTP response
@@ -106,7 +108,8 @@ int main() {
         "Content-Length: 1234",
         "Connection: keep-alive",
         "",
-        "<html><body>Hello, world!</body></html>"
+        "<html><body>Hello, world!</body></html> Part 1.",
+        "<html><body> Goodbye!</body></html> Part 2."
     };
 
     // Initialize the HTTP parser structure
