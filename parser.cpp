@@ -6,8 +6,13 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp> // Include the nlohmann/json library
+
+#include <tinyxml2.h>        // Include the tinyxml2 library
+
 
 using namespace std;
+using json = nlohmann::json; // Create an alias for the JSON library
 
 // Structure to hold the parsed HTTP message data
 struct HttpParser {
@@ -17,7 +22,7 @@ struct HttpParser {
     string status_message; // For responses
     map<string, string> headers;
     string body;
-    
+
     // For multipart/form-data support
     struct MultipartPart {
         string name;
@@ -42,7 +47,7 @@ struct HttpParser {
 };
 
 // Enum for managing parser state
-enum ParseState { REQUEST_LINE, RESPONSE_LINE, HEADERS, BODY, MULTIPART };
+enum ParseState { REQUEST_LINE, RESPONSE_LINE, HEADERS, BODY, MULTIPART, JSON_BODY, XML_BODY };
 
 // Function to report errors
 void reportError(HttpParser& parser, const string& message) {
@@ -58,7 +63,7 @@ bool validateHeader(const string& key, const string& value, HttpParser& parser) 
         reportError(parser, "Header key or value cannot be empty");
         return false;
     }
-    
+
     // Example check for duplicates (simple implementation)
     if (parser.headers.find(key) != parser.headers.end()) {
         reportError(parser, "Duplicate header: " + key);
@@ -189,6 +194,30 @@ void appendBody(const string& body_content, HttpParser& parser) {
     cout << "Body (streamed): " << parser.body << "\n";
 }
 
+// Function to parse JSON body
+void parseJsonBody(const string& body_content, HttpParser& parser) {
+    try {
+        json j = json::parse(body_content);
+        cout << "Parsed JSON body:\n" << j.dump(4) << "\n"; // Pretty print JSON
+    } catch (json::parse_error& e) {
+        reportError(parser, "Failed to parse JSON: " + string(e.what()));
+    }
+}
+
+// Function to parse XML body
+void parseXmlBody(const string& body_content, HttpParser& parser) {
+    tinyxml2::XMLDocument doc;
+    if (doc.Parse(body_content.c_str()) != tinyxml2::XML_SUCCESS) {
+        reportError(parser, "Failed to parse XML");
+        return;
+    }
+
+    cout << "Parsed XML body:\n";
+    tinyxml2::XMLPrinter printer;
+    doc.Print(&printer);
+    cout << printer.CStr() << "\n"; // Print the XML content
+}
+
 // Helper function to detect the end of headers
 bool isEndOfHeaders(const string& line) {
     return line.empty();
@@ -244,6 +273,20 @@ void handleParsingAsync(const string& http_message_chunk, HttpParser& parser) {
                     if (parser.onError) parser.onError(parser.errorMessage);
                     return;  // Stop if error occurred
                 }
+            } else if (content_type_it != parser.headers.end() && 
+                       content_type_it->second.find("application/json") != string::npos) {
+                parseJsonBody(line, parser);
+                if (parser.hasError) {
+                    if (parser.onError) parser.onError(parser.errorMessage);
+                    return;  // Stop if error occurred
+                }
+            } else if (content_type_it != parser.headers.end() && 
+                       content_type_it->second.find("application/xml") != string::npos) {
+                parseXmlBody(line, parser);
+                if (parser.hasError) {
+                    if (parser.onError) parser.onError(parser.errorMessage);
+                    return;  // Stop if error occurred
+                }
             } else {
                 appendBody(line, parser);
             }
@@ -257,21 +300,14 @@ void handleParsingAsync(const string& http_message_chunk, HttpParser& parser) {
 }
 
 int main() {
-    // Example HTTP request (with multipart/form-data)
+    // Example HTTP request (with JSON body)
     string http_request_chunk = 
         "POST /upload HTTP/1.1\r\n"
         "Host: example.com\r\n"
-        "Content-Type: multipart/form-data; boundary=boundary123\r\n"
-        "Content-Length: 240\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 42\r\n"
         "\r\n"
-        "--boundary123\r\n"
-        "Content-Disposition: form-data; name=\"field1\"\r\n\r\n"
-        "value1\r\n"
-        "--boundary123\r\n"
-        "Content-Disposition: form-data; name=\"file\"; filename=\"file.txt\"\r\n"
-        "Content-Type: text/plain\r\n\r\n"
-        "file content here\r\n"
-        "--boundary123--\r\n";
+        "{\"key\":\"value\", \"number\":123}\n";
 
     // Initialize the HTTP parser structure
     HttpParser parser;
