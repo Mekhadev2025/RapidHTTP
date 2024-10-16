@@ -34,53 +34,6 @@ The HTTP Parser is a C++ library designed to parse HTTP requests and responses. 
    ./http_parser
    ```
 
-## Usage
-
-### Parsing HTTP Requests
-
-You can parse HTTP requests by passing a vector of strings that represent the lines of the HTTP request. Here’s a simple example:
-
-```cpp
-#include <iostream>
-#include <vector>
-using namespace std;
-
-// Example of parsing an HTTP request
-vector<string> http_request = {
-    "GET /index.html HTTP/1.1",
-    "Host: example.com",
-    "Connection: keep-alive",
-    "Accept: text/html",
-    "",
-    "Body content here (optional, usually for POST requests)"
-};
-
-HttpParser parser;
-handleParsing(http_request, parser, true);
-```
-
-### Parsing HTTP Responses
-
-To parse HTTP responses, use a similar approach with a vector of strings representing the lines of the HTTP response:
-
-```cpp
-#include <iostream>
-#include <vector>
-using namespace std;
-
-// Example of parsing an HTTP response
-vector<string> http_response = {
-    "HTTP/1.1 200 OK",
-    "Content-Type: text/html",
-    "Content-Length: 1234",
-    "Connection: keep-alive",
-    "",
-    "<html><body>Hello, world!</body></html>"
-};
-
-HttpParser parser;
-handleParsing(http_response, parser, false);
-```
 
 ## Contributing
 
